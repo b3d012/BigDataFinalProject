@@ -1,3 +1,5 @@
+V1.2 
+
 # Edge-IIoT IDS Project
 
 An intrusion detection project built around an **XGBoost model trained on the Edge-IIoT dataset** and deployed in two practical modes:
