@@ -1,72 +1,92 @@
-Training data:
-Rows                  : 156,986
-Features used          : 32
-Numeric features       : 32
-Categorical features   : 0
-Dropped ID/payload cols : 15
-Dropped empty cols      : 0
-Dropped constant cols   : 14
-Class distribution:
-Attack_label
-normal     24301
-attack    132685
+# IDS Experiment Summary
 
-Threshold selection:
-Strategy           : fixed
-Selected threshold : 0.500000000
+## Final Status
 
-=== EDGE-IIOT HOLDOUT TEST ===
-Threshold : 0.500000000
-Accuracy  : 0.9472
-ROC-AUC   : 0.9926
-PR-AUC    : 0.9985
-              precision    recall  f1-score   support
+The current working implementation satisfies the main project pipeline for the class demo:
 
-      Normal       0.77      0.95      0.85      4860
-      Attack       0.99      0.95      0.97     26538
+```text
+Edge-IIoT dataset -> XGBoost model -> tshark live windows -> Spark Structured Streaming -> MongoDB -> Streamlit dashboard
+```
 
-    accuracy                           0.95     31398
-   macro avg       0.88      0.95      0.91     31398
-weighted avg       0.96      0.95      0.95     31398
+The offline PCAP replay path still exists, but the primary live demo now runs through Spark and MongoDB.
 
-Confusion matrix [ [TN, FP], [FN, TP] ]
-[[ 4600   260]
- [ 1398 25140]]
+## What Is Complete
 
-Top feature importances:
-                    feature  importance
-              num__mqtt.len    0.242288
-num__mqtt.conflag.cleansess    0.173165
-             num__tcp.flags    0.117073
-         num__mqtt.conflags    0.083966
-               num__tcp.seq    0.066995
-         num__mqtt.hdrflags    0.060569
-               num__tcp.ack    0.057286
-               num__tcp.len    0.044894
-          num__mqtt.msgtype    0.038050
-    num__tcp.connection.rst    0.037907
-    num__tcp.connection.syn    0.021654
-    num__dns.retransmission    0.012090
-            num__udp.stream    0.005694
-           num__icmp.seq_le    0.005616
- num__tcp.connection.synack    0.005603
-         num__icmp.checksum    0.004709
-        num__udp.time_delta    0.003337
-    num__tcp.connection.fin    0.003247
-   num__http.content_length    0.003108
-           num__tcp.ack_raw    0.002878
-            num__dns.qry.qu    0.002479
-         num__tcp.flags.ack    0.001919
-            num__arp.opcode    0.001248
-           num__arp.hw.size    0.001074
+- Edge-IIoT dataset training is complete.
+- The model is trained and saved as a reusable `joblib` bundle.
+- Live traffic is captured in 30-second `tshark` windows.
+- Spark Structured Streaming consumes those window JSON files.
+- MongoDB stores live windows, predictions, and alerts.
+- Streamlit shows the live state for the demo.
+- A one-command launcher resets old state and starts all three services together.
 
-Runtime:
-Threshold model fit : 1.813s
-Eval model fit      : 2.146s
-Final model fit     : 2.916s
-Holdout prediction : 0.057s (547863 rows/s)
+## What The Dashboard Shows
 
-Saved model bundle: experment\edge_iiot_xgb_model.joblib
-Saved feature importance: experment\edge_iiot_xgb_model.feature_importance.csv
-Saved metadata: experment\edge_iiot_xgb_model.metadata.json
-Total train command: 104.106s
+The dashboard is intentionally small and sufficient for the demo:
+
+- total windows ingested
+- total predictions written
+- total alerts written
+- latest attack ratio
+- latest max attack probability
+- recent alert and prediction tables
+- prediction trend chart
+
+Optional metrics, such as processing latency or throughput per minute, can be added later, but they are not required for the class demo.
+
+## Current Model Metrics
+
+Last Edge-IIoT holdout test:
+
+| Metric | Value |
+|---|---:|
+| Rows after duplicate removal | `156,986` |
+| Features used | `32` |
+| Holdout test rows | `31,398` |
+| Accuracy | `0.9472` |
+| ROC-AUC | `0.9926` |
+| PR-AUC | `0.9985` |
+| Normal precision | `0.77` |
+| Normal recall | `0.95` |
+| Attack precision | `0.99` |
+| Attack recall | `0.95` |
+| True negatives | `4,600` |
+| False positives | `260` |
+| False negatives | `1,398` |
+| True positives | `25,140` |
+
+## Current Live Demo Stack
+
+| Component | File |
+|---|---|
+| Live tshark window producer | `testoutside/live_wifi_edge_ids.py` |
+| Spark Structured Streaming job | `spark_streaming/edge_ids_stream.py` |
+| MongoDB dashboard | `spark_streaming/ids_dashboard.py` |
+| One-command launcher | `run_live_demo.py` |
+| Existing model bundle | `experment/edge_iiot_xgb_model.joblib` |
+
+## Current Collections
+
+MongoDB collections used by the live demo:
+
+- `windows`
+- `predictions`
+- `alerts`
+
+The `windows` collection stores metadata and a bounded record preview. The full JSON window remains on disk in `stream_input/live/`.
+
+## Demo Launch
+
+Use this command for a fresh run:
+
+```powershell
+python run_live_demo.py `
+  --interface 5 `
+  --tshark "C:\Program Files\Wireshark\tshark.exe"
+```
+
+The launcher clears old stream files, checkpoints, and MongoDB collections before it starts.
+
+## Report-Ready Summary
+
+This project demonstrates a complete intrusion-detection pipeline for the class: a public dataset is used to train an XGBoost model offline, live traffic is captured in fixed windows with `tshark`, Spark processes the windows as a streaming workload, MongoDB stores the live outputs, and Streamlit provides a simple operational view of the live system. The same feature contract is used end to end, which is why the model works across both training and live inference.

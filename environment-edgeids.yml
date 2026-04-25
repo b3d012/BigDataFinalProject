@@ -10,3 +10,6 @@ dependencies:
       - joblib
       - scikit-learn
       - xgboost
+      - pyspark
+      - pymongo
+      - streamlit

@@ -2,60 +2,37 @@
 
 ## Final Status
 
-The best working setup is the Edge-IIoT + Wireshark/tshark pipeline:
+The current working implementation satisfies the main project pipeline:
 
 ```text
-Edge-IIoT CSV -> XGBoost model -> tshark extraction from local/live traffic -> calibrated window alerts
+Edge-IIoT dataset -> XGBoost model -> tshark live windows -> Spark Structured Streaming -> MongoDB -> Streamlit dashboard
 ```
 
-The current live test is usable after local benign baseline calibration. Without calibration, the model is too sensitive on normal Wi-Fi.
+The offline PCAP replay path still exists, but the primary classroom demo is now the Spark + MongoDB live path launched from one command.
 
-## Timeline
+## What Is Complete
 
-| Date | Step | Result |
-|---|---|---|
-| 2026-04-18 | CIC-IDS2017 CSV + CICFlowMeter pipeline | Found schema/feature mismatch between CIC CSVs and local PCAP extraction. |
-| 2026-04-18 | Patched CICFlowMeter workflow | Improved column mapping and feature scaling, but local traffic still had strong domain shift. |
-| 2026-04-19 | PCAP-first CIC plan | Prepared a better CIC method, but it required large CIC PCAPs and careful labeling. |
-| 2026-04-19 | Switched to Edge-IIoTset | Better fit because Edge-IIoT provides Wireshark/tshark-style packet fields. |
-| 2026-04-19 | Trained Edge-IIoT XGBoost model | Holdout accuracy `0.9474`, ROC-AUC `0.9926`, PR-AUC `0.9985`. |
-| 2026-04-19 | Tested local PCAP files | Detected the named attacks and kept `BENIGN_BASELINE` / `noAttack*` benign using the calibrated file rule. |
-| 2026-04-19 | Built live Wi-Fi monitor | Added macOS/Windows-compatible `tshark` monitor with CSV outputs. |
-| 2026-04-19 | Tested normal Wi-Fi | Initial rule caused false positives on normal network traffic. |
-| 2026-04-19 | Added benign baseline calibration | New calibrated ratio threshold `0.820186`; normal smoke test became benign. |
-| 2026-04-20 | Reran Edge training with timing | Saved accuracy and speed metrics into model metadata. |
+- Edge-IIoT dataset selection and training are done.
+- The model is trained and saved as a reusable joblib bundle.
+- Live traffic is captured in 30-second tshark windows.
+- Spark Structured Streaming consumes those window JSON files.
+- MongoDB stores live windows, predictions, and alerts.
+- Streamlit shows the live status for the demo.
+- A one-command launcher resets old state and starts all three services together.
 
-## Method Comparison
+## What The Dashboard Shows
 
-| Method | Extractor | Dataset Type | What Worked | Main Problem | Final Decision |
-|---|---|---|---|---|---|
-| CIC-IDS2017 CSV | Python `cicflowmeter` | Flow CSV | Basic XGBoost training worked. | Local PCAP features did not match CIC CSV feature semantics well. | Not final. Keep only as reference. |
-| CIC PCAP-first | Same extractor for CIC + local PCAPs | Flow PCAP/CSV | Correct methodology for CIC-style work. | Needs large CIC PCAPs and precise labels. | Useful later, not current best. |
-| Edge-IIoTset CSV | `tshark` | Wireshark packet-field CSV | Matched local PCAP extraction better than CICFlowMeter. | IoT/IIoT domain still differs from laptop Wi-Fi. | Current training pipeline. |
-| Live Wi-Fi monitor | `tshark` live capture | Live packet windows | Works on `en0`, writes CSV predictions, supports Windows/macOS. | Needs local baseline to avoid false positives. | Current outside-test tool. |
+The dashboard is intentionally small and sufficient for the demo:
 
-## Final Files To Use
+- total windows ingested
+- total predictions written
+- total alerts written
+- latest attack ratio
+- latest max attack probability
+- recent alert and prediction tables
+- prediction trend chart
 
-| Purpose | File |
-|---|---|
-| Edge training/testing code | `experment/edge_iiot_experiment.py` |
-| Edge trained model | `testoutside/edge_iiot_xgb_model.joblib` |
-| Live Wi-Fi monitor | `testoutside/live_wifi_edge_ids.py` |
-| Live baseline thresholds | `testoutside/live_wifi_baseline.json` |
-| Live usage guide | `testoutside/README.md` |
-| Local PCAP prediction summary | `experment/edge_iiot_attack_predictions_summary.csv` |
-
-## Current Model Rules
-
-| Rule | Value |
-|---|---:|
-| Per-record attack threshold | `0.5` |
-| Window max probability threshold | `0.5` |
-| Original file/window attack-ratio threshold | `0.4` |
-| Calibrated live attack-ratio threshold | `0.820186` |
-| Minimum records before alert | `50` |
-
-## Model Accuracy
+## Current Model Metrics
 
 Last Edge-IIoT holdout test:
 
@@ -74,68 +51,38 @@ Last Edge-IIoT holdout test:
 | False negatives | `1,386` |
 | True positives | `25,152` |
 
-## Last Training And Testing Speed
+## Current Live Demo Stack
 
-Measured on the last full Edge training run on 2026-04-20:
-
-| Runtime Item | Value |
-|---|---:|
-| Total train command | `45.409s` |
-| Preprocessing / CSV typing | `40.675s` |
-| Threshold model fit | `1.442s` |
-| Evaluation model fit | `1.462s` |
-| Final model fit | `1.638s` |
-| Holdout prediction time | `0.028s` |
-| Holdout prediction speed | `1,141,166 rows/s` |
-
-## Local PCAP Result
-
-| Group | Result |
+| Component | File |
 |---|---|
-| `BENIGN_BASELINE`, `noAttack*` | Benign |
-| NMAP scans | Attack |
-| HTTP flood | Attack |
-| UDP flood | Attack |
-| SSH brute force | Attack |
-| Captured attack windows | Attack |
+| Live tshark window producer | `testoutside/live_wifi_edge_ids.py` |
+| Spark Structured Streaming job | `spark_streaming/edge_ids_stream.py` |
+| MongoDB dashboard | `spark_streaming/ids_dashboard.py` |
+| One-command launcher | `run_live_demo.py` |
+| Existing model bundle | `experment/edge_iiot_xgb_model.joblib` |
 
-## Cleanup
+## Current Collections
 
-Removed generated/cache artifacts:
+MongoDB collections used by the live demo:
 
-| Removed | Reason |
-|---|---|
-| `__pycache__/`, `.DS_Store` | Cache/system files |
-| Duplicate per-flow prediction CSVs | Large and reproducible |
-| `experment/extracted-attack-edge-csvs/` | Reproducible from PCAPs |
-| Old CIC extracted CSV outputs | Not used by final method |
-| Smoke-test output folders owned by user | Temporary validation files |
+- `windows`
+- `predictions`
+- `alerts`
 
-Kept important inputs/artifacts:
+The `windows` collection stores metadata and a bounded record preview. The full JSON window remains on disk in `stream_input/live/`.
 
-| Kept | Reason |
-|---|---|
-| `attack/` | Original local PCAP test set |
-| `experment/ML-EdgeIIoT-dataset.csv` | Training dataset |
-| `testoutside/edge_iiot_xgb_model.joblib` | Final model for live use |
-| `testoutside/live_wifi_baseline.json` | Calibrated normal-network threshold |
+## Demo Launch
 
-Remaining root-owned generated folders need sudo to remove:
+Use this command for a fresh run:
 
-```bash
-sudo rm -rf live-monitor-output testoutside/live-output
+```powershell
+python run_live_demo.py `
+  --interface 5 `
+  --tshark "C:\Program Files\Wireshark\tshark.exe"
 ```
 
-## Commands
+The launcher clears old stream files, checkpoints, and MongoDB collections before it starts.
 
-Run calibrated live monitor on macOS:
+## Report-Ready Summary
 
-```bash
-sudo python testoutside/live_wifi_edge_ids.py --interface en0 --tshark /Applications/Wireshark.app/Contents/MacOS/tshark --window_seconds 30 --pause_seconds 5
-```
-
-Recalibrate on normal traffic:
-
-```bash
-sudo python testoutside/live_wifi_edge_ids.py --interface en0 --tshark /Applications/Wireshark.app/Contents/MacOS/tshark --window_seconds 30 --pause_seconds 5 --calibrate_windows 20 --no_packet_csv
-```
+This project now demonstrates a complete intrusion-detection pipeline for the class: a public dataset is used to train an XGBoost model offline, live traffic is captured in fixed windows with tshark, Spark processes the windows as a streaming workload, MongoDB stores the live outputs, and Streamlit provides a simple operational view of the live system. The same feature contract is used end to end, which is why the model works across both training and live inference.

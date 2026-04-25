@@ -5,11 +5,11 @@ V1.2
 An intrusion detection project built around an **XGBoost model trained on the Edge-IIoT dataset** and deployed in two practical modes:
 
 1. **Offline replay mode** using saved PCAP files
-2. **Live monitoring mode** using `tshark` capture windows
+2. **Live monitoring mode** using `tshark` capture windows, Spark Structured Streaming, and MongoDB
 
 The core pipeline is:
 
-**Edge-IIoT dataset -> trained XGBoost bundle -> tshark feature extraction -> offline or live scoring**
+**Edge-IIoT dataset -> trained XGBoost bundle -> tshark feature extraction -> offline scoring or live Spark/MongoDB scoring**
 
 ---
 
@@ -18,7 +18,7 @@ The core pipeline is:
 This project trains an intrusion detection model on the Edge-IIoT dataset and then reuses the same trained bundle to analyze either:
 
 - saved PCAP attack files from the `attack/` folder
-- live traffic captured directly from a network interface
+- live traffic captured directly from a network interface and streamed into MongoDB
 
 The reason this setup works is that the **training data** and the **inference data** use the same style of features: Wireshark/tshark-style packet fields.
 
@@ -38,6 +38,18 @@ This Edge-IIoT project works better because:
 - the same saved model bundle is reused for both offline replay and live monitoring
 
 That makes training and inference much more consistent.
+
+## Demo architecture
+
+The classroom demo now uses this live path:
+
+1. `testoutside/live_wifi_edge_ids.py` captures 30-second tshark windows and writes one JSON document per window.
+2. `spark_streaming/edge_ids_stream.py` reads those JSON files with Spark Structured Streaming.
+3. Spark scores each window with the existing XGBoost bundle.
+4. Spark writes raw windows, predictions, and alerts to local MongoDB.
+5. `spark_streaming/ids_dashboard.py` reads MongoDB and shows the current live state.
+
+Note: MongoDB stores each window's metadata plus a bounded record preview. The full JSON window remains on disk in `stream_input/live/` so the stream stays under the BSON size limit.
 
 ---
 
@@ -87,30 +99,46 @@ It supports these subcommands:
 
 ---
 
-## 2. `testoutside/live_wifi_edge_ids_pcap.py`
+## 2. `testoutside/live_wifi_edge_ids.py`
 
 This is the **live monitoring** script.
 
-It supports two modes:
+It captures live traffic with `tshark` and writes one JSON window document per capture window into `stream_input/live/`.
 
-### Live mode
-- captures traffic from a network interface with `tshark`
-- groups traffic into time windows
-- extracts the model fields
-- scores each window
-- writes live prediction summaries
-- supports benign baseline calibration
+That JSON is the input to Spark Structured Streaming.
 
-### PCAP mode
-- reads already-saved PCAP files from a folder
-- extracts the model fields
-- scores each file
-- writes summary and per-record outputs
+## 3. `spark_streaming/edge_ids_stream.py`
 
-So this script can be used for:
+This is the **Spark streaming inference** job.
 
-- live traffic monitoring
-- scoring saved PCAP folders by passing `--pcap_dir`
+It:
+
+- reads window JSON files from `stream_input/live/`
+- loads the existing model bundle
+- scores each captured window
+- writes `windows`, `predictions`, and `alerts` to MongoDB
+
+## 4. `spark_streaming/ids_dashboard.py`
+
+This is the **MongoDB-backed dashboard**.
+
+It:
+
+- reads the three MongoDB collections
+- shows recent alerts and predictions
+- displays a simple live trend chart
+
+The dashboard metrics are intentionally minimal but sufficient for the demo:
+
+- total windows ingested
+- total predictions written
+- total alerts written
+- latest attack ratio
+- latest max attack probability
+- recent alert and prediction tables
+- prediction trend chart
+
+No extra metrics are required for the class demo unless you want to extend the report.
 
 ---
 
@@ -211,41 +239,54 @@ This produces:
 
 ## Live monitoring workflow
 
-The live script uses `tshark` to capture traffic directly from an interface and score it in time windows.
+The live producer uses `tshark` to capture traffic directly from an interface and write JSON windows for Spark.
+
+### One-command launcher
+
+This resets old stream files, clears the MongoDB collections, and starts Spark, Streamlit, and live capture together.
+
+```powershell
+python run_live_demo.py `
+  --interface 5 `
+  --tshark "C:\Program Files\Wireshark\tshark.exe"
+```
+
+Change the capture interface here with `--interface`.
 
 ### List interfaces
 
 ```powershell
-python testoutside/live_wifi_edge_ids_pcap.py --list-interfaces --tshark "C:\Program Files\Wireshark\tshark.exe"
+python testoutside/live_wifi_edge_ids.py --list-interfaces --tshark "C:\Program Files\Wireshark\tshark.exe"
 ```
 
-### Run benign baseline calibration
-
-Do this only when **no attack** is active.
+### Run live capture producer
 
 ```powershell
-python testoutside/live_wifi_edge_ids_pcap.py `
+python testoutside/live_wifi_edge_ids.py `
   --tshark "C:\Program Files\Wireshark\tshark.exe" `
   --interface 5 `
   --window_seconds 30 `
   --pause_seconds 5 `
-  --calibrate_windows 20 `
-  --output_dir testoutside/live-output `
-  --no_packet_csv
-```
-
-### Run live monitoring
-
-```powershell
-python testoutside/live_wifi_edge_ids_pcap.py `
-  --tshark "C:\Program Files\Wireshark\tshark.exe" `
-  --interface 5 `
-  --window_seconds 30 `
-  --pause_seconds 5 `
-  --output_dir testoutside/live-output
+  --stream_dir stream_input/live
 ```
 
 Replace `5` with the correct interface number.
+
+### Start Spark streaming
+
+```powershell
+spark-submit spark_streaming/edge_ids_stream.py `
+  --input_dir stream_input/live `
+  --checkpoint_dir stream_input/checkpoints `
+  --mongo_uri mongodb://localhost:27017 `
+  --mongo_db edgeids
+```
+
+### Start the dashboard
+
+```powershell
+streamlit run spark_streaming/ids_dashboard.py
+```
 
 ---
 
@@ -259,6 +300,8 @@ conda activate edgeids
 ```
 
 Install Wireshark and make sure `tshark.exe` is available.
+Start MongoDB locally before running the live producer or Spark stream.
+If you use the launcher, it will clear old stream files, checkpoints, and MongoDB collections before starting.
 
 ---
 
@@ -282,14 +325,16 @@ python experment/edge_iiot_experiment.py run --tshark "C:\Program Files\Wireshar
 
 A simple explanation for supervisors or reviewers:
 
-> This project trains an XGBoost intrusion detection model on the Edge-IIoT dataset, which contains Wireshark/tshark-style packet fields. During training, duplicate rows are removed, identity and payload-heavy columns are dropped, and the remaining fields are preprocessed and used to train the model. The resulting model bundle is then reused in two ways: first, to score saved PCAP attack files through an offline replay pipeline, and second, to score live traffic windows captured with tshark. The reason this works is that both training and inference use the same style of packet-level tshark features.
+> This project trains an XGBoost intrusion detection model on the Edge-IIoT dataset, which contains Wireshark/tshark-style packet fields. During training, duplicate rows are removed, identity and payload-heavy columns are dropped, and the remaining fields are preprocessed and used to train the model. The resulting model bundle is then reused in two ways: first, to score saved PCAP attack files through an offline replay pipeline, and second, to capture live tshark windows, stream them through Spark Structured Streaming, and store the results in MongoDB for dashboarding. The reason this works is that both training and inference use the same style of packet-level tshark features.
 
 ---
 
 ## Notes
 
 - The `attack/` folder is used for saved replay PCAPs.
-- `live_wifi_edge_ids_pcap.py` does **not** need to be hardcoded to `attack/`; use `--pcap_dir attack` if you want that script to score the same saved PCAPs.
+- `testoutside/live_wifi_edge_ids.py` is the main live producer for the Spark/MongoDB demo.
+- `testoutside/live_wifi_edge_ids_pcap.py` is still available as a legacy PCAP replay helper.
+- `run_live_demo.py` is the recommended way to launch the full demo.
 - The folder name itself does not affect model accuracy.
 - Accuracy depends on the extracted tshark fields matching the training feature contract.
 
@@ -312,12 +357,26 @@ python experment/edge_iiot_experiment.py extract --tshark "C:\Program Files\Wire
 python experment/edge_iiot_experiment.py score
 ```
 
-### Live monitor
+### Live capture producer
 ```powershell
-python testoutside/live_wifi_edge_ids_pcap.py `
+python testoutside/live_wifi_edge_ids.py `
   --tshark "C:\Program Files\Wireshark\tshark.exe" `
   --interface 5 `
   --window_seconds 30 `
   --pause_seconds 5 `
-  --output_dir testoutside/live-output
+  --stream_dir stream_input/live
+```
+
+### Spark streaming job
+```powershell
+spark-submit spark_streaming/edge_ids_stream.py `
+  --input_dir stream_input/live `
+  --checkpoint_dir stream_input/checkpoints `
+  --mongo_uri mongodb://localhost:27017 `
+  --mongo_db edgeids
+```
+
+### Dashboard
+```powershell
+streamlit run spark_streaming/ids_dashboard.py
 ```

@@ -1,407 +1,229 @@
-# Edge-IIoT Project Explanation and Run Guide
+# Edge-IIoT Project Guide and Runbook
 
-## 1. Big picture
+## 1. Big Picture
 
 This project has one trained IDS model and two ways to use it:
 
-1. offline replay mode  
-   - train the model from the Edge-IIoT CSV dataset
-   - take saved PCAP files from the `attack/` folder
-   - extract the same tshark feature fields from those PCAPs
-   - score them with the trained model
+1. Offline replay mode
+   - train the model from the Edge-IIoT dataset
+   - extract tshark features from saved PCAP files
+   - score the extracted files with the saved model bundle
 
-2. live monitoring mode  
-   - capture live traffic in time windows with `tshark`
-   - extract the same tshark feature fields
-   - score each live window with the same trained model
-   - optionally calibrate a benign baseline first
+2. Live monitoring mode
+   - capture live traffic in fixed windows with `tshark`
+   - write one JSON document per window
+   - stream those windows through Spark
+   - store windows, predictions, and alerts in MongoDB
+   - show the live state in Streamlit
 
-So the real pipeline is:
+The live demo stack is:
 
-Edge-IIoT dataset -> trained XGBoost bundle -> tshark feature extraction -> offline PCAP scoring or live window scoring
-
----
-
-## 2. Why this model works better than the old CICFlowMeter one
-
-The old CICFlowMeter approach had a mismatch between:
-- what the model was trained on
-- what the live system extracted from local traffic
-
-This Edge-IIoT project works better because:
-- the model is trained on Wireshark/tshark-style packet fields
-- the offline and live scripts also extract Wireshark/tshark-style packet fields
-- the same saved model bundle is reused for both offline and live scoring
-
-So training and inference are much more consistent.
-
-That is the main reason this pipeline works better.
+```text
+Edge-IIoT dataset -> XGBoost bundle -> tshark windows -> Spark Structured Streaming -> MongoDB -> Streamlit
+```
 
 ---
 
-## 3. Main scripts
+## 2. Why This Pipeline Works
 
-## A. `edge_iiot_experiment.py`
+The project works because the training data and inference data use the same style of tshark/Wireshark feature fields.
 
-This is the main training and offline replay script.
+That gives you a consistent feature contract:
+
+- training on Edge-IIoT CSV data
+- inference from tshark feature windows
+
+This is why the same saved model bundle can be reused for both offline scoring and live monitoring.
+
+---
+
+## 3. Main Scripts
+
+### A. `experment/edge_iiot_experiment.py`
+
+This is the training and offline replay script.
 
 It supports:
+
 - `train`
 - `extract`
 - `score`
 - `compare`
 - `run`
 
-### What each subcommand does
+What it does:
 
-### `train`
 - loads the Edge-IIoT dataset CSV
 - builds binary labels from `Attack_label` or `Attack_type`
 - drops duplicate rows by default
-- removes identity and payload-heavy fields by default
-- infers numeric vs categorical features
-- builds a preprocessing pipeline
+- removes identity and payload-heavy columns by default
+- infers numeric and categorical features
+- builds preprocessing
 - trains an XGBoost classifier
-- chooses a threshold strategy
-- evaluates on a holdout split
-- retrains a final model on the full dataset
-- saves a model bundle and metadata
+- evaluates the model
+- saves the final model bundle and metadata
 
-### `extract`
-- reads PCAP files from the `attack/` folder by default
-- uses `tshark` to extract Edge-IIoT-style fields
-- saves those extracted CSVs to `experment/extracted-attack-edge-csvs`
+### B. `testoutside/live_wifi_edge_ids.py`
 
-### `score`
-- reads the extracted CSVs
-- aligns them to the training feature contract
-- runs the saved model bundle
-- creates prediction CSV files and summary files
+This is the live capture producer for the classroom demo.
 
-### `compare`
-- compares extracted local CSVs with the Edge-IIoT training CSV schema and value ranges
+It:
 
-### `run`
-- performs train + extract + score + compare in one command
+- captures live traffic with `tshark`
+- groups traffic into 30-second windows
+- writes one JSON document per window into `stream_input/live/`
 
----
+If you want to use a different network interface next week, change the `--interface` value when you run this script or the launcher.
 
-## B. `live_wifi_edge_ids_pcap.py`
+### C. `spark_streaming/edge_ids_stream.py`
 
-This is the live and PCAP scoring script.
+This is the Spark Structured Streaming job.
 
-It can run in two modes:
+It:
 
-### live mode
-- captures live traffic from a selected interface with `tshark`
-- writes temporary/raw CSV windows
-- applies the same model bundle
-- writes live prediction summaries
-- can calibrate a benign baseline
+- reads the JSON window files from `stream_input/live/`
+- loads the saved model bundle
+- scores each window
+- writes to MongoDB collections:
+  - `windows`
+  - `predictions`
+  - `alerts`
 
-### PCAP mode
-- reads already-saved PCAP files from a folder
-- extracts the model fields from each PCAP
-- scores each file
-- writes summary and per-record results
+The `windows` collection stores metadata and a bounded record preview. The full JSON window stays on disk in `stream_input/live/` so MongoDB documents stay small.
 
----
+### D. `spark_streaming/ids_dashboard.py`
 
-## 4. Important difference between the two scripts
+This is the dashboard.
 
-### `edge_iiot_experiment.py`
-Use this for:
-- training the model
-- extracting from saved PCAPs in `attack/`
-- scoring extracted CSVs
-- offline experiments
+It reads MongoDB and shows:
 
-### `live_wifi_edge_ids_pcap.py`
-Use this for:
-- live capture and live scoring
-- baseline calibration
-- optionally scoring saved PCAP folders too
+- total windows
+- total predictions
+- total alerts
+- latest attack ratio
+- latest max attack probability
+- recent alerts
+- recent predictions
+- a simple trend chart
 
-So the clean split is:
+For the class demo, these metrics are sufficient.
 
-- `edge_iiot_experiment.py` = training + offline replay pipeline
-- `live_wifi_edge_ids_pcap.py` = live monitor and optional PCAP scorer
+### E. `run_live_demo.py`
+
+This is the recommended launcher.
+
+It:
+
+- clears old stream files
+- clears old Spark checkpoints
+- clears temporary capture files
+- drops the MongoDB collections
+- starts Spark
+- starts Streamlit
+- starts the live producer
 
 ---
 
-## 5. Should you change the live script to use `attack/` instead of `pcaps/`?
+## 4. Dashboard Scope
 
-Do **not** change the script just to rename the folder.
+The dashboard is intentionally minimal.
 
-The folder name itself does **not** affect accuracy.
+It is enough to show:
 
-What matters is:
-- which PCAP files you give the script
-- whether the extracted tshark fields match the training feature contract
+- the stream is active
+- the model is producing predictions
+- alerts are being recorded
+- recent traffic can be inspected quickly
 
-If you want `live_wifi_edge_ids_pcap.py` to score the same saved attack PCAPs that `edge_iiot_experiment.py` uses, just pass:
+Optional metrics like processing latency or throughput per minute are nice to have, but they are not required for the project requirements or the class demo.
 
-```powershell
---pcap_dir attack
+---
+
+## 5. How The Model Is Trained
+
+The training dataset is:
+
+```text
+experment/ML-EdgeIIoT-dataset.csv
 ```
 
-That is enough.
-
-### Recommended answer for your dr
-- `attack/` is the offline replay folder used by `edge_iiot_experiment.py`
-- `live_wifi_edge_ids_pcap.py` is more general and can read any PCAP folder through `--pcap_dir`
-- the folder name is only for organization, not model accuracy
-
-### Important warning
-Do **not** hardcode `attack` as the default PCAP folder inside `live_wifi_edge_ids_pcap.py` unless you are sure you want it to default into PCAP mode.
-
-If `--pcap_dir` is always set by default, the script may stop behaving like a live monitor by default.
-
-Best practice:
-- keep the script generic
-- use `--pcap_dir attack` when you want offline PCAP scoring
-- use `--interface ...` when you want live capture
-
----
-
-## 6. How the model is trained
-
-The training data is the Edge-IIoT dataset CSV:
-- `experment/ML-EdgeIIoT-dataset.csv`
-
-### Training process
+Training flow:
 
 1. load the CSV
 2. normalize column names
-3. build binary labels from:
-   - `Attack_label`
-   - or `Attack_type`
-4. remove duplicate rows by default
-5. drop identity/payload-heavy columns by default, such as:
-   - timestamps
-   - source/destination IPs
-   - some full payload or URI-like fields
-   - source/destination ports in the default training path
+3. build binary labels
+4. remove duplicate rows
+5. drop identity and payload-heavy columns
 6. infer numeric and categorical columns
-7. build preprocessing:
-   - numeric -> median imputation
-   - categorical -> missing fill + one-hot encoding
-8. split into:
-   - training
-   - validation
-   - holdout test
+7. build preprocessing
+8. split into train, validation, and holdout test sets
 9. train XGBoost
-10. choose the record threshold
-    - default script behavior uses a fixed threshold of `0.5`
-11. evaluate on holdout data
-12. retrain the final model on the full dataset
-13. save:
-    - model bundle
-    - metadata JSON
-    - feature importance CSV
+10. evaluate on holdout data
+11. retrain the final model on the full dataset
+12. save the model bundle, metadata JSON, and feature importance CSV
 
-### What the model bundle contains
-The saved `.joblib` bundle includes:
-- the XGBoost model
-- the preprocessor
-- the chosen thresholds
-- file/window decision thresholds
-- training feature metadata
-
-This matters because the same bundle is reused for offline scoring and live scoring.
+The saved `joblib` bundle contains the trained model, preprocessing pipeline, thresholds, and feature metadata.
 
 ---
 
-## 7. Why the model works on local/live data
+## 6. Live Demo Commands
 
-It works because the project uses the same style of features in both places:
-
-### training
-- Edge-IIoT CSV uses Wireshark/tshark-style fields
-
-### inference
-- saved PCAPs are converted with `tshark` into those same field types
-- live capture also uses `tshark` to extract those same field types
-
-So the model sees a representation that is much closer to what it learned during training.
-
-That is the main reason it generalizes better than the old CICFlowMeter path.
-
----
-
-## 8. Outputs you should expect
-
-## From training
-After:
+### Create the environment
 
 ```powershell
-python experment/edge_iiot_experiment.py train
-```
-
-You should get:
-- `experment/edge_iiot_xgb_model.joblib`
-- `experment/edge_iiot_xgb_model.metadata.json`
-- `experment/edge_iiot_xgb_model.feature_importance.csv`
-
-## From extract
-After:
-
-```powershell
-python experment/edge_iiot_experiment.py extract --tshark "C:\Program Files\Wireshark\tshark.exe"
-```
-
-You should get:
-- `experment/extracted-attack-edge-csvs/*.csv`
-
-## From score
-After:
-
-```powershell
-python experment/edge_iiot_experiment.py score
-```
-
-You should get:
-- `experment/edge_iiot_attack_predictions.csv`
-- `experment/edge_iiot_attack_predictions_summary.csv`
-
-## From live monitor
-After running the live script, you should get files under:
-- `testoutside/live-output/`
-or another `--output_dir` you choose
-
-Usually:
-- `live_wifi_window_predictions.csv`
-- `live_wifi_packet_predictions.csv`
-- `raw-window-csvs/`
-
----
-
-## 9. Commands to run everything
-
-## Step 1. Create environment
-
-```powershell
-conda create -n edgeids python=3.11 -y
+conda env create -f environment-edgeids.yml
 conda activate edgeids
-pip install pandas numpy joblib scikit-learn xgboost
 ```
 
-Install Wireshark and make sure `tshark.exe` exists.
-
----
-
-## Step 2. Train the model
+### Run the full live demo
 
 ```powershell
-python experment/edge_iiot_experiment.py train
+python run_live_demo.py `
+  --interface 5 `
+  --tshark "C:\Program Files\Wireshark\tshark.exe"
 ```
 
----
-
-## Step 3. Extract saved PCAPs from `attack/`
+### Run the producer manually
 
 ```powershell
-python experment/edge_iiot_experiment.py extract --tshark "C:\Program Files\Wireshark\tshark.exe"
-```
-
----
-
-## Step 4. Score the extracted CSVs
-
-```powershell
-python experment/edge_iiot_experiment.py score
-```
-
----
-
-## Step 5. Or do the full offline pipeline in one command
-
-```powershell
-python experment/edge_iiot_experiment.py run --tshark "C:\Program Files\Wireshark\tshark.exe"
-```
-
----
-
-## Step 6. List live interfaces
-
-```powershell
-python testoutside/live_wifi_edge_ids_pcap.py --list-interfaces --tshark "C:\Program Files\Wireshark\tshark.exe"
-```
-
----
-
-## Step 7. Calibrate a benign live baseline
-
-Use this only when no attack is active.
-
-```powershell
-python testoutside/live_wifi_edge_ids_pcap.py `
+python testoutside/live_wifi_edge_ids.py `
   --tshark "C:\Program Files\Wireshark\tshark.exe" `
   --interface 5 `
   --window_seconds 30 `
   --pause_seconds 5 `
-  --calibrate_windows 20 `
-  --output_dir testoutside/live-output `
-  --no_packet_csv
+  --stream_dir stream_input/live
 ```
 
----
-
-## Step 8. Run live monitoring
+### Run Spark manually
 
 ```powershell
-python testoutside/live_wifi_edge_ids_pcap.py `
-  --tshark "C:\Program Files\Wireshark\tshark.exe" `
-  --interface 5 `
-  --window_seconds 30 `
-  --pause_seconds 5 `
-  --output_dir testoutside/live-output
+spark-submit spark_streaming/edge_ids_stream.py `
+  --input_dir stream_input/live `
+  --checkpoint_dir stream_input/checkpoints `
+  --mongo_uri mongodb://localhost:27017 `
+  --mongo_db edgeids
 ```
 
-Replace `5` with your actual interface number.
-
----
-
-## Step 9. Use the live script to score the `attack/` folder too
-
-If you want the live script to score saved attack PCAPs instead of live traffic:
+### Run the dashboard manually
 
 ```powershell
-python testoutside/live_wifi_edge_ids_pcap.py `
-  --tshark "C:\Program Files\Wireshark\tshark.exe" `
-  --pcap_dir attack `
-  --pcap_glob "*.pcap*" `
-  --output_dir testoutside/live-output
+streamlit run spark_streaming/ids_dashboard.py
 ```
 
-This does **not** require changing the script code.
+---
+
+## 7. What To Mention In The Report
+
+Use this short explanation in your report:
+
+> The project trains an XGBoost intrusion detection model on the Edge-IIoT dataset. For the live system, tshark captures traffic in fixed windows, Spark Structured Streaming processes each window, MongoDB stores the live outputs, and Streamlit provides a dashboard for the class demo. The same tshark-style feature contract is used during both training and inference, which keeps the model consistent across offline and live use.
 
 ---
 
-## 10. Suggested explanation to your dr
+## 8. Notes
 
-You can explain the project like this:
-
-> We trained an XGBoost IDS model on the Edge-IIoT dataset, which contains Wireshark/tshark-style packet fields.  
-> During training, we removed duplicate rows, dropped identity and payload-heavy columns to reduce memorization, built binary attack labels, and trained an XGBoost model with a saved preprocessing bundle.  
-> For offline replay, we use saved PCAPs in the `attack/` folder, extract the same tshark feature fields, and score them with the trained bundle using `edge_iiot_experiment.py`.  
-> For live monitoring, we use `live_wifi_edge_ids_pcap.py`, which captures live traffic in windows with `tshark`, extracts the same field representation, and scores each window with the same model.  
-> We also calibrate a benign baseline so normal network traffic does not cause too many false alerts.  
-> The reason this pipeline works is that the training features and inference features are aligned: both are based on the same tshark/Wireshark-style packet fields.
-
----
-
-## 11. Final recommendation
-
-Use this as your final setup:
-
-- `edge_iiot_experiment.py` for:
-  - training
-  - offline extraction
-  - offline scoring
-- `live_wifi_edge_ids_pcap.py` for:
-  - live monitoring
-  - live baseline calibration
-  - optional saved-PCAP scoring by passing `--pcap_dir attack`
-
-That keeps the project simple and easy to explain.
+- `run_live_demo.py` is the recommended starting point for the final demo.
+- `--interface` is where you change the capture NIC.
+- The launcher resets the live stream folders and MongoDB collections by default.
+- The legacy PCAP replay path is still available for offline evaluation.
+- The dashboard does not need extra metrics unless you want to extend the project beyond the assignment requirements.
