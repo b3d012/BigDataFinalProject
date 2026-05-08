@@ -1,17 +1,23 @@
-# Ignore everything by default
+# Source-only submission allowlist.
+# Everything is ignored by default so local datasets, PCAPs, generated CSVs,
+# model binaries, stream output, caches, IDE files, and the separate report .tex
+# do not appear in the GitHub sync.
 *
 
-# Keep folders explorable
+# Keep folders explorable so allowlisted files inside them can be tracked.
 !*/
 
-# Keep Python source
-!*.py
-
-# Keep markdown docs
-!*.md
-
-# Keep env file
-!environment-edgeids.yml
-
-# Keep gitignore itself
+# Root project files to publish.
 !.gitignore
+!README.md
+!EDGE_IIOT_FULL_PROJECT_GUIDE.md
+!TrainingResults.md
+!environment-edgeids.yml
+!run_live_demo.py
+
+# Source files to publish.
+!experment/edge_iiot_experiment.py
+!spark_streaming/edge_ids_stream.py
+!spark_streaming/ids_dashboard.py
+!testoutside/live_wifi_edge_ids.py
+!testoutside/live_wifi_edge_ids_pcap.py

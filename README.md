@@ -1,5 +1,3 @@
-V1.2 
-
 # Edge-IIoT IDS Project
 
 An intrusion detection project built around an **XGBoost model trained on the Edge-IIoT dataset** and deployed in two practical modes:
@@ -135,38 +133,35 @@ The dashboard metrics are intentionally minimal but sufficient for the demo:
 - total alerts written
 - latest attack ratio
 - latest max attack probability
+- latest alert latency, measured as `alert.created_at - window_end`
 - recent alert and prediction tables
 - prediction trend chart
 
-No extra metrics are required for the class demo unless you want to extend the report.
+The latency metric is included so the report can describe detection time from the end of the capture window to alert creation.
 
 ---
 
-## Recommended project structure
+## Repository contents
 
 ```text
 BIGDATAFINALPROJECT/
-├── attack/
-│   └── *.pcap / *.pcapng
-├── data/
-│   └── dataedge-iot/
-│       ├── ML-EdgeIIoT-dataset.csv
-│       ├── DNN-EdgeIIoT-dataset.csv
-│       └── live_data_training.csv
-├── experment/
-│   ├── edge_iiot_experiment.py
-│   ├── ML-EdgeIIoT-dataset.csv
-│   ├── extracted-attack-edge-csvs/
-│   ├── edge_iiot_xgb_model.joblib
-│   ├── edge_iiot_xgb_model.metadata.json
-│   ├── edge_iiot_xgb_model.feature_importance.csv
-│   ├── edge_iiot_attack_predictions.csv
-│   └── edge_iiot_attack_predictions_summary.csv
-├── testoutside/
-│   └── live_wifi_edge_ids_pcap.py
-├── environment-edgeids.yml
-└── README.md
+|-- .gitignore
+|-- README.md
+|-- EDGE_IIOT_FULL_PROJECT_GUIDE.md
+|-- TrainingResults.md
+|-- environment-edgeids.yml
+|-- run_live_demo.py
+|-- experment/
+|   `-- edge_iiot_experiment.py
+|-- spark_streaming/
+|   |-- edge_ids_stream.py
+|   `-- ids_dashboard.py
+`-- testoutside/
+    |-- live_wifi_edge_ids.py
+    `-- live_wifi_edge_ids_pcap.py
 ```
+
+The GitHub repository is source-only. The report `.tex` file is submitted separately, and local datasets, demo PCAPs, extracted CSVs, trained model binaries, live stream windows, checkpoints, and cache folders are intentionally ignored.
 
 ---
 
@@ -209,6 +204,8 @@ The saved `.joblib` bundle contains:
 - training feature metadata
 
 This same bundle is reused for both offline replay and live scoring.
+
+Model binaries are generated locally and are not committed to GitHub. Run the training command below to recreate `experment/edge_iiot_xgb_model.joblib` before scoring or live monitoring.
 
 ---
 
@@ -332,6 +329,7 @@ A simple explanation for supervisors or reviewers:
 ## Notes
 
 - The `attack/` folder is used for saved replay PCAPs.
+- Dataset files, demo PCAPs, extracted CSVs, trained model files, live stream output, Spark checkpoints, and the separate report `.tex` file are intentionally excluded from GitHub.
 - `testoutside/live_wifi_edge_ids.py` is the main live producer for the Spark/MongoDB demo.
 - `testoutside/live_wifi_edge_ids_pcap.py` is still available as a legacy PCAP replay helper.
 - `run_live_demo.py` is the recommended way to launch the full demo.
@@ -380,3 +378,4 @@ spark-submit spark_streaming/edge_ids_stream.py `
 ```powershell
 streamlit run spark_streaming/ids_dashboard.py
 ```
+

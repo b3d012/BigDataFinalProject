@@ -32,6 +32,42 @@ def fetch_collection(
     return pd.json_normalize(rows)
 
 
+def format_duration(seconds: object) -> str:
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        return "n/a"
+    if pd.isna(value):
+        return "n/a"
+    if value < 60:
+        return f"{value:.1f}s"
+    minutes, remainder = divmod(value, 60)
+    return f"{int(minutes)}m {remainder:.1f}s"
+
+
+def add_detection_latency(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    enriched = df.copy()
+    stored_latency = (
+        pd.to_numeric(enriched["detection_latency_seconds"], errors="coerce")
+        if "detection_latency_seconds" in enriched.columns
+        else pd.Series(pd.NA, index=enriched.index, dtype="Float64")
+    )
+
+    if "window_end" in enriched.columns and "created_at" in enriched.columns:
+        window_end = pd.to_datetime(enriched["window_end"], errors="coerce", utc=True)
+        created_at = pd.to_datetime(enriched["created_at"], errors="coerce", utc=True)
+        computed_latency = (created_at - window_end).dt.total_seconds().clip(lower=0)
+        enriched["detection_latency_seconds"] = stored_latency.fillna(computed_latency)
+    else:
+        enriched["detection_latency_seconds"] = stored_latency
+
+    enriched["detection_latency"] = enriched["detection_latency_seconds"].map(format_duration)
+    return enriched
+
+
 def show_metrics(windows_df: pd.DataFrame, predictions_df: pd.DataFrame, alerts_df: pd.DataFrame) -> None:
     total_windows = int(len(windows_df))
     total_predictions = int(len(predictions_df))
@@ -46,15 +82,22 @@ def show_metrics(windows_df: pd.DataFrame, predictions_df: pd.DataFrame, alerts_
         if not predictions_df.empty and "max_attack_probability" in predictions_df.columns
         else 0.0
     )
+    latest_alert_latency = (
+        alerts_df.iloc[0]["detection_latency_seconds"]
+        if not alerts_df.empty and "detection_latency_seconds" in alerts_df.columns
+        else None
+    )
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Windows", f"{total_windows:,}")
     col2.metric("Predictions", f"{total_predictions:,}")
     col3.metric("Alerts", f"{total_alerts:,}")
     col4.metric("Latest max prob", f"{latest_prob:.3f}")
+    col5.metric("Latest alert latency", format_duration(latest_alert_latency))
 
     st.caption(
         f"Latest attack ratio: {latest_ratio:.3f} | "
+        "Alert latency = alert created_at - window_end | "
         f"Refreshed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
@@ -108,6 +151,8 @@ def main() -> None:
     windows_df = fetch_collection(client, db_name, windows_coll, int(limit), sort_field="ingested_at")
     predictions_df = fetch_collection(client, db_name, predictions_coll, int(limit), sort_field="created_at")
     alerts_df = fetch_collection(client, db_name, alerts_coll, int(limit), sort_field="created_at")
+    predictions_df = add_detection_latency(predictions_df)
+    alerts_df = add_detection_latency(alerts_df)
 
     show_metrics(windows_df, predictions_df, alerts_df)
 

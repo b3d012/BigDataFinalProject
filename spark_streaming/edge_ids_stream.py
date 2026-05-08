@@ -112,6 +112,28 @@ def as_mongo_doc(data: dict[str, object]) -> dict[str, object]:
     return {key: native_value(value) for key, value in data.items()}
 
 
+def parse_iso_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def seconds_since_window_end(window_end: object, event_time: datetime) -> float | None:
+    parsed_window_end = parse_iso_datetime(window_end)
+    if parsed_window_end is None:
+        return None
+    return max(0.0, (event_time - parsed_window_end.astimezone(timezone.utc)).total_seconds())
+
+
 def write_upsert(collection: pymongo.collection.Collection, document: dict[str, object]) -> None:
     doc = as_mongo_doc(document)
     doc_id = doc.get("_id")
@@ -149,6 +171,7 @@ def process_batch_factory(
             records = normalize_records(row.get("records"))
             record_df = pd.DataFrame(records)
             record_preview = preview_records(records)
+            ingested_at = datetime.now(timezone.utc)
             window_doc = as_mongo_doc(
                 {
                     "_id": window_file,
@@ -168,13 +191,14 @@ def process_batch_factory(
                     "records_truncated": bool(len(records) > len(record_preview)),
                     "stream_json_path": row.get("stream_json_path")
                     or str(REPO_ROOT / "stream_input" / "live" / window_file),
-                    "ingested_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "ingested_at": ingested_at.isoformat(timespec="seconds"),
                 }
             )
             write_upsert(windows, window_doc)
 
             if record_df.empty:
                 summary = probability_summary(np.array([]))
+                created_at = datetime.now(timezone.utc)
                 prediction_doc = {
                     "_id": window_file,
                     "window_id": row.get("window_id"),
@@ -192,7 +216,8 @@ def process_batch_factory(
                     "file_ratio_threshold": file_ratio_threshold,
                     "min_records": min_records,
                     "window_pred_label": 0,
-                    "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "detection_latency_seconds": seconds_since_window_end(row.get("window_end"), created_at),
+                    "created_at": created_at.isoformat(timespec="seconds"),
                 }
                 write_upsert(predictions, prediction_doc)
                 continue
@@ -213,6 +238,7 @@ def process_batch_factory(
                 min_records=min_records,
             )
 
+            created_at = datetime.now(timezone.utc)
             prediction_doc = {
                 "_id": window_file,
                 "window_id": row.get("window_id"),
@@ -230,11 +256,13 @@ def process_batch_factory(
                 "file_ratio_threshold": file_ratio_threshold,
                 "min_records": min_records,
                 "window_pred_label": window_pred_label,
-                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "detection_latency_seconds": seconds_since_window_end(row.get("window_end"), created_at),
+                "created_at": created_at.isoformat(timespec="seconds"),
             }
             write_upsert(predictions, prediction_doc)
 
             if window_pred_label:
+                alert_created_at = datetime.now(timezone.utc)
                 alert_doc = {
                     "_id": window_file,
                     "window_id": row.get("window_id"),
@@ -249,7 +277,8 @@ def process_batch_factory(
                     "max_attack_probability": summary["max_attack_probability"],
                     "mean_attack_probability": summary["mean_attack_probability"],
                     "reason": "window_pred_label=1",
-                    "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "detection_latency_seconds": seconds_since_window_end(row.get("window_end"), alert_created_at),
+                    "created_at": alert_created_at.isoformat(timespec="seconds"),
                 }
                 write_upsert(alerts, alert_doc)
 
